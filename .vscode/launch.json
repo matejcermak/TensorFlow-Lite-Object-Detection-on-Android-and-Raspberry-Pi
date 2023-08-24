@@ -1,0 +1,34 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "run_video",
+            "type": "python",
+            "request": "launch",
+            "program": "TFLite_detection_video.py",
+            "args": [
+                "--video",
+                "videos/varia2.mp4",
+                "--modeldir",
+                "${input:model}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ],
+    "inputs": [
+        {
+            "id": "model",
+            "type": "pickString",
+            "description": "Pick your model dir",
+            "options": [
+                "models/vehicle_mobilenet2_full",
+                "models/vehicle_mobilenet2_quant",
+                "models/ssd_mobilenet_v1_1",
+            ]
+        }
+    ],
+}
