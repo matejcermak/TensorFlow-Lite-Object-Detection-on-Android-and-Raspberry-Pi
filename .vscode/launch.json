@@ -11,7 +11,7 @@
             "program": "TFLite_detection_video.py",
             "args": [
                 "--video",
-                "videos/varia2.mp4",
+                "videos/recordings/2023-09-03_10-31_14.mp4",
                 "--modeldir",
                 "${input:model}"
             ],
@@ -25,8 +25,11 @@
             "type": "pickString",
             "description": "Pick your model dir",
             "options": [
-                "models/vehicle_mobilenet2_full",
+                "models/ssd_mn_v2_traffic_quant_5k",
+                "models/ssd_mn_v2_traffic_quant",
+                "models/ssd_mn_v2_traffic_full",
                 "models/vehicle_mobilenet2_quant",
+                "models/vehicle_mobilenet2_full",
                 "models/ssd_mobilenet_v1_1",
             ]
         }

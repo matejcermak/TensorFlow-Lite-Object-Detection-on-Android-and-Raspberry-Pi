@@ -1,0 +1,6 @@
+car
+truck
+bus
+bicycle
+motorcycle
+other vehicle
