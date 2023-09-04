@@ -87,8 +87,11 @@ PATH_TO_CKPT = os.path.join(CWD_PATH, MODEL_NAME, GRAPH_NAME)
 PATH_TO_LABELS = os.path.join(CWD_PATH, MODEL_NAME, LABELMAP_NAME)
 
 ROAD_EDGE_TOP_X = 0.34
-ROAD_EDGE_TOP_Y = 0.45
-ROAD_EDGE_MIDDLE = 0.5
+ROAD_EDGE_TOP_Y = 0.5
+ROAD_EDGE_MIDDLE = 0.65
+
+DANGER_THRESHOLD = 0.7  # immediate danger threshold > notify!
+
 
 def canny_edges(frame):
     canny = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -103,7 +106,7 @@ def filter_road_area(edges):
     ignore_mask_color = 255
     # Define a four sided polygon to mask
     imshape = edges.shape
-    
+
     vertices = np.array(
         [
             [  #       X               Y
@@ -120,7 +123,7 @@ def filter_road_area(edges):
 
 
 def get_road_edge(frame):
-    # canny = imutils.auto_canny(frame)
+    # canny = imutils.auto_canny(frame)  # auto canny instead of preconfigured one
     canny = canny_edges(frame)
     canny_filtered = filter_road_area(canny)
     lines = cv2.HoughLines(
@@ -135,8 +138,9 @@ def get_road_edge(frame):
     if lines is None:
         return None
 
-    thetas = [l[0][1] for l in lines]
-    # selected_i = thetas.index(min(thetas))  # select the one with min theta
+    # thetas = [l[0][1] for l in lines]
+
+    # selected_i = thetas.index(min(thetas))  # select the one with min theta (the most vertical line)
     selected_i = 0  # select first element (most voted)
 
     l = lines[selected_i][0]
@@ -152,6 +156,13 @@ def get_road_edge(frame):
     pt2 = (int(x0 - 1000 * (-b)), int(y0 - 1000 * (a)))
 
     return pt1, pt2
+
+
+def get_safety_line_x(y):
+    a = 1.35  # angle
+    b = SCENE_WIDTH * 0.2  # offset
+    # (y+b)/a     ==    y=(a*x)+b
+    return int((y + b) / a)
 
 
 # Load the label map
@@ -204,6 +215,8 @@ video = cv2.VideoCapture(VIDEO_PATH)
 imW = video.get(cv2.CAP_PROP_FRAME_WIDTH)
 imH = video.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
+points = []
+
 while video.isOpened():
     # Acquire frame and resize to expected shape [1xHxWx3]
     ret, frame = video.read()
@@ -237,18 +250,31 @@ while video.isOpened():
         0
     ]  # Confidence of detected objects
 
+    ########### ROAD EDGE ##########
+    # get the road edge before we draw shapes into image
+    road_edge = get_road_edge(frame)
+
+    ########### FOCAL CENTER ##########
     SCENE_WIDTH = int(imW)
     SCENE_HEIGHT = int(imH)
-    focal_center = int(SCENE_WIDTH / 2) - 40  # TODO: -40px adjustment varia first video
+    focal_center = int(SCENE_WIDTH / 2) + 49  # TODO: find focal center automatically (40 px offset)
 
     r_half_size = SCENE_WIDTH - focal_center
     l_half_size = focal_center
 
-    # get the road edge before we draw shapes into image
-    road_edge = get_road_edge(frame)
-
     # draw center line
-    # cv2.rectangle(frame, (focal_center, 0), (focal_center, SCENE_HEIGHT), (255, 255, 255), 1)
+    # cv2.rectangle(frame, (focal_center, 0), (focal_center, SCENE_HEIGHT), (255, 255, 255), 3)
+
+    # draw safety line
+    # cv2.line(frame, (int(SCENE_WIDTH*.7),SCENE_HEIGHT), (int(SCENE_WIDTH*.3), 0), (0, 255, 0), 3, cv2.LINE_AA)
+    cv2.line(
+        frame,
+        (get_safety_line_x(SCENE_HEIGHT), SCENE_HEIGHT),
+        (get_safety_line_x(0), 0),
+        (0, 255, 0),
+        2,
+        cv2.LINE_AA,
+    )
 
     # Loop over all detections and draw detection box if confidence is above minimum threshold
     for i in range(len(scores)):
@@ -262,7 +288,7 @@ while video.isOpened():
             ymax = int(min(imH, (boxes[i][2] * imH)))
             xmax = int(min(imW, (boxes[i][3] * imW)))
 
-            # original box of the detected cars
+            # original box of the detected cars (white)
             cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (255, 255, 255), 1)
 
             # skip the box if the whole car is not detected (corners)
@@ -279,79 +305,65 @@ while video.isOpened():
             if ((ymax - ymin) * (xmax - xmin)) / (SCENE_WIDTH * SCENE_HEIGHT) < 0.003:
                 continue
 
-            r_dist_to_center = max(0, xmax - focal_center)
-            l_dist_to_center = max(0, focal_center - xmin)
+            # r_dist_to_center = max(0, xmax - focal_center)
+            # l_dist_to_center = max(0, focal_center - xmin)
 
             # distance of the box to the center of image (0-1) (L/R)
-            box_corner_dis = max(
-                r_dist_to_center / r_half_size, l_dist_to_center / l_half_size
-            )  # ** 2
+            # box_corner_dis = max(
+            #     r_dist_to_center / r_half_size, l_dist_to_center / l_half_size
+            # )  # ** 2
 
             # print(f"ldist:{l_dist_to_center / l_half_size} rdist:{r_dist_to_center / r_half_size} cornerdist:{box_corner_dis}")
 
-            # calculate the new box width
-            original_box_width = xmax - xmin
-            size_coeff = original_box_width * (0.45 * box_corner_dis)
+            ######## NEW BOX WIDTH (should be the cars front) ########
+            # original_box_width = xmax - xmin
+            # size_coeff = original_box_width * (0.45 * box_corner_dis)
 
             # overtaking on R (camera view, driving on right side of the road)
-            if (SCENE_WIDTH - xmax) < xmin:
-                xmin = int(xmin + size_coeff)  # increase left corner of the box
+            # xmin = int(xmin + size_coeff)  # increase left corner of the box
+            corner = SCENE_WIDTH - xmin  # distance from R corner of scene to L corner of object
+            # half_size = r_half_size
 
-                corner = SCENE_WIDTH - xmin  # distance from R corner of scene to L corner of object
-                half_size = r_half_size
-            else:  # overtaking from L
-                xmax = int(xmax - size_coeff)  # decrease right corner of the box
+            ######## A - distance from the center (left or right corner) ########
 
-                corner = xmax  # distance from L corner of scene to R corner of object
-                half_size = l_half_size
+            bottom_left_point = (xmin, ymax)
+            safety_line_point = (get_safety_line_x(ymax), ymax)
 
-            # A - distance from the center (left or right corner)
+            points.append(bottom_left_point)
+
+            cv2.circle(frame, bottom_left_point, radius=0, color=(0, 255, 0), thickness=10)
+            cv2.circle(frame, safety_line_point, radius=0, color=(0, 255, 0), thickness=10)
 
             # depends on whether we are overtaken from L/R
             # if box area overlapping the center fix on 1 (center_x in min)
-            shorter_dst = min(corner, half_size)
-            a = (shorter_dst / half_size) ** 5
+            safety_line_dist = SCENE_WIDTH - get_safety_line_x(ymax)
+            shorter_dst = min(corner, safety_line_dist)
+            a = (shorter_dst / safety_line_dist) ** 3
 
-            # B - distance from the bottom
-            # b = ymax / SCENE_HEIGHT
-
-            # C - height of the object relative to the scene 0 - 1
+            ######## C - box proportions relative to scene size ########
             # c = (ymax - ymin) / SCENE_HEIGHT
-
-            # C - area of box relative to scene size
             # distance = (1 - ((ymax - ymin) * (xmax - xmin)) / (SCENE_WIDTH * SCENE_HEIGHT)) ** 2
             # box_size_relative = (ymax - ymin) / SCENE_HEIGHT
-            box_size_relative = (xmax - xmin) / (SCENE_WIDTH / 2)
-            distance = (1 - box_size_relative) ** 4  # height only TODO: trucks vs cars??
-            DISTANCE_TRESHOLD = (
-                0.4  # around 15 meters when the car starts to get dangerous (0% danger)
-            )
+            box_size_relative = (xmax - xmin) / (SCENE_WIDTH)  # already recalculated width
+            distance = (
+                1 - box_size_relative
+            ) ** 4  # TODO: trucks vs cars?? should only take front width
+
+            # around # meters when the car starts to get dangerous (0% danger)
+            DISTANCE_TRESHOLD = 1  # TODO: remove?
             c = max(0, (DISTANCE_TRESHOLD - distance)) / DISTANCE_TRESHOLD
 
-            # c = 1 - distance
-
-            # distance_m = c *
-
             # weighted result (w_# must add up to 1)
+
+            ######## DANGER INDEX CALCULATION ########
+
             # danger = (a * 0.33) + (b * 0.33) + (c * 0.33)
             danger = a * c
             # danger = c
+            # danger = a
 
             danger = round(danger, 2)
             color = (0, int((1 - danger) * 255), int(danger * 255))
-
-            # cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 2)
-            # cv2.putText(
-            #     frame,
-            #     "{} {:.0%} - dng:{:.0%} a:{:.2} b:{:.2} c:{:.2}".format(
-            #         det_label, detection.score, danger, a, b, c
-            #     ),
-            #     (xmin, ymin - 7),
-            #     cv2.FONT_HERSHEY_COMPLEX,
-            #     0.6,
-            #     color,
-            #     1,
-            # )
 
             # Draw label
             object_name = labels[
@@ -362,7 +374,11 @@ while video.isOpened():
                 object_name, scores[i], danger, a, c, distance
             )
 
-            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 2)
+            # draw a new recalculated box estimating car front only
+
+            cv2.rectangle(
+                frame, (xmin, ymin), (xmax, ymax), color, 7 if danger > DANGER_THRESHOLD else 2
+            )
 
             FONT_SCALE = 0.5
 
@@ -395,16 +411,42 @@ while video.isOpened():
             # w = xmax-xmin
             # print(f'w={w}, h={h}, h/w={h/w}')
 
+    for p in points[-100:]:  # last # points
+        cv2.circle(frame, p, radius=0, color=(0, 255, 0), thickness=3)
+
     # All the results have been drawn on the frame, so it's time to display it.
 
-    # input("")  # ENTER to move to next frame
+    input("")  # ENTER to move to next frame
 
+    # draw road edge
     if road_edge is not None:
-        cv2.line(frame, road_edge[0], road_edge[1], (0, 0, 255), 5, cv2.LINE_AA)
+        cv2.line(frame, road_edge[0], road_edge[1], (0, 0, 255), 2, cv2.LINE_AA)
 
-    cv2.line(frame, (0,SCENE_HEIGHT), (int(SCENE_WIDTH*ROAD_EDGE_TOP_X), int(SCENE_HEIGHT*ROAD_EDGE_TOP_Y)), (0, 0, 255), 1, cv2.LINE_AA)
-    cv2.line(frame, (int(SCENE_WIDTH*ROAD_EDGE_TOP_X), int(SCENE_HEIGHT*ROAD_EDGE_TOP_Y)), (int(SCENE_WIDTH*ROAD_EDGE_MIDDLE), int(SCENE_HEIGHT*ROAD_EDGE_TOP_Y)), (0, 0, 255), 1, cv2.LINE_AA)
-    cv2.line(frame, (int(SCENE_WIDTH*ROAD_EDGE_MIDDLE), int(SCENE_HEIGHT*ROAD_EDGE_TOP_Y)), (int(SCENE_WIDTH*ROAD_EDGE_MIDDLE), int(SCENE_HEIGHT)), (0, 0, 255), 1, cv2.LINE_AA)
+    # draw road edge region filter
+    cv2.line(
+        frame,
+        (0, SCENE_HEIGHT),
+        (int(SCENE_WIDTH * ROAD_EDGE_TOP_X), int(SCENE_HEIGHT * ROAD_EDGE_TOP_Y)),
+        (0, 0, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.line(
+        frame,
+        (int(SCENE_WIDTH * ROAD_EDGE_TOP_X), int(SCENE_HEIGHT * ROAD_EDGE_TOP_Y)),
+        (int(SCENE_WIDTH * ROAD_EDGE_MIDDLE), int(SCENE_HEIGHT * ROAD_EDGE_TOP_Y)),
+        (0, 0, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.line(
+        frame,
+        (int(SCENE_WIDTH * ROAD_EDGE_MIDDLE), int(SCENE_HEIGHT * ROAD_EDGE_TOP_Y)),
+        (int(SCENE_WIDTH * ROAD_EDGE_MIDDLE), int(SCENE_HEIGHT)),
+        (0, 0, 255),
+        1,
+        cv2.LINE_AA,
+    )
 
     cv2.imshow("Object detector", frame)
 

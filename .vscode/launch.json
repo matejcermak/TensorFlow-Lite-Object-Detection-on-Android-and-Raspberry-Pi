@@ -11,7 +11,10 @@
             "program": "TFLite_detection_video.py",
             "args": [
                 "--video",
-                "videos/recordings/2023-09-03_10-31_14.mp4",
+                // "videos/recordings/2023-09-03_10-31_14.mp4",
+                // "videos/recordings/2023-09-03_10-27_10.mp4",
+                // "videos/recordings/2023-09-03_10-34_17.mp4",
+                "videos/overtakes.mp4",
                 "--modeldir",
                 "${input:model}"
             ],
