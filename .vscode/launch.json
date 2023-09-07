@@ -14,7 +14,22 @@
                 // "videos/recordings/2023-09-03_10-31_14.mp4",
                 // "videos/recordings/2023-09-03_10-27_10.mp4",
                 // "videos/recordings/2023-09-03_10-34_17.mp4",
-                "videos/overtakes.mp4",
+                // "videos/recordings/",
+                "videos/recordings_queluz/",
+                // "videos/recordings_queluz/overtake_close.mp4",
+                // "videos/overtakes.mp4",
+                "--modeldir",
+                "${input:model}"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "run_webcam",
+            "type": "python",
+            "request": "launch",
+            "program": "TFLite_detection_webcam.py",
+            "args": [
                 "--modeldir",
                 "${input:model}"
             ],
