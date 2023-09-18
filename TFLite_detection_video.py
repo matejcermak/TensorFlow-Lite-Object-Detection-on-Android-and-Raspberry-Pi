@@ -305,7 +305,7 @@ if __name__ == "__main__":
             dng.value = frame_max_danger
 
             # input("")  # ENTER to move to next frame
-            time.sleep(0.0005)
+            # time.sleep(0.0005)
 
             # Press 'q' to quit
             if cv2.waitKey(1) == ord("q"):

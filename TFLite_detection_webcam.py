@@ -16,13 +16,17 @@
 # Import packages
 import os
 import argparse
+import time
 import cv2
 import numpy as np
 import sys
 import time
 from threading import Thread
 import importlib.util
+import random
 from functions import *
+from radar_broadcast import RadarBroadcast
+from multiprocessing import Process, Value
 from picamera2 import Picamera2, Preview
 from libcamera import controls, Transform
 from pprint import *
@@ -46,19 +50,32 @@ use_TPU = args.edgetpu
 
 #time.sleep(60)
 
-######## init BLE #############
-app = Application()
-app.add_service(BatteryService(0))
-HR_SERVICE = HeartRateService(1)
-app.add_service(HR_SERVICE)
-app.add_service(DeviceInformationService(2))
-#app.add_service(WahooService(2))
-app.register()
+######## INIT Radar #############
 
-adv = Advertisement(0)
-adv.register()
+def broadcast_radar(dst, dng):
+    ant_senddemo = RadarBroadcast(dst, dng)
+    ant_senddemo.open_channel()
 
-######### init Picamera ###########
+
+if __name__ == "__main__":
+    # queue = Queue()
+    dst = Value("d", 1.0)
+    dng = Value("d", 0.0)
+    p = Process(
+        target=broadcast_radar,
+        args=(
+            dst,
+            dng,
+        ),
+    )
+    p.start()
+
+    # ant_senddemo = RadarBroadcast(distance)
+    # ant_senddemo.open_channel()
+    # print(queue.get())    # prints "[42, None, 'hello']"
+    # p.join()
+
+######### INIT Picamera ###########
 
 picam2 = Picamera2()
 
@@ -78,7 +95,6 @@ picam2.set_controls({
 })
 
 picam2.start()
-
 
 # Import TensorFlow libraries
 # If tflite_runtime is installed, import interpreter from tflite_runtime, else import from regular tensorflow
@@ -140,6 +156,8 @@ output_details = interpreter.get_output_details()
 height = input_details[0]["shape"][1]
 width = input_details[0]["shape"][2]
 
+print(input_details)
+
 floating_model = input_details[0]["dtype"] == np.float32
 
 input_mean = 127.5
@@ -173,18 +191,35 @@ while True:
     frame = picam2.capture_array()
 
     ############# VARIABLE SETTING #############
-    frame_max_danger = 0.0  # reset danger for frame
+    # reset values for frame
+    frame_max_danger = 0.0
+    frame_min_distance = 1.0
+    ######### FRAME PREPROCESSING ###########
+    input_data = preprocess_frame(height, width, frame, floating_model)
 
     ############# INFERENCE ###########
-    input_data = preprocess_frame(height, width, frame, floating_model)
     boxes, classes, scores = inference(interpreter, input_data, input_details, output_details)
 
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+    ############# ROAD EDGE #############
+    # get the road edge before we draw shapes into image
+    road_edge = get_road_edge(frame)
+
+    ############# SAFETY LINE #############
+    cv2.line(
+        frame,
+        (get_safety_line_x(SCENE_HEIGHT, SCENE_WIDTH), SCENE_HEIGHT),
+        (get_safety_line_x(0, SCENE_WIDTH), 0),
+        (0, 255, 0),
+        2,
+        cv2.LINE_AA,
+    )
+
     # Loop over all detections and draw detection box if confidence is above minimum threshold
     for i in range(len(scores)):
         if (scores[i] > MIN_CONF_THRESHOLD) and (scores[i] <= 1.0):
-            #print(scores[i])
+            # continue  # uncomment to disable boxes
             ############# Get bounding box coordinates and draw box #############
             ymin, xmin, ymax, xmax = get_box_coords(SCENE_WIDTH, SCENE_HEIGHT, boxes, i)
 
@@ -220,6 +255,9 @@ while True:
             danger = round(danger, 2)
             color = (0, int((1 - danger) * 255), int(danger * 255))
             frame_max_danger = danger if danger > frame_max_danger else frame_max_danger
+            frame_min_distance = (
+                distance if distance < frame_min_distance else frame_min_distance
+            )
 
             if DEBUG_DRAW:
                 draw_detection(
@@ -239,13 +277,45 @@ while True:
                     color,
                 )
 
-    HR_SERVICE.hrmc.set_hr_value(100 + int(frame_max_danger*100))
-
     if frame_max_danger > DANGER_THRESHOLD:
         print(f"DANGER: {frame_max_danger}")
 
     # Draw framerate in corner of frame
     if DEBUG_DRAW:
+        # draw last # BL points
+        for p in POINTS[-DRAW_N_POINTS:]:
+            cv2.circle(frame, p, radius=0, color=(0, 255, 0), thickness=3)
+
+        # draw road edge (single line for whole frame)
+        if road_edge is not None:
+            cv2.line(frame, road_edge[0], road_edge[1], (0, 0, 255), 2, cv2.LINE_AA)
+
+        # draw road edge region filter
+        cv2.line(
+            frame,
+            (0, SCENE_HEIGHT),
+            (int(SCENE_WIDTH * ROAD_EDGE_TOP_X), int(SCENE_HEIGHT * ROAD_EDGE_TOP_Y)),
+            (0, 0, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.line(
+            frame,
+            (int(SCENE_WIDTH * ROAD_EDGE_TOP_X), int(SCENE_HEIGHT * ROAD_EDGE_TOP_Y)),
+            (int(SCENE_WIDTH * ROAD_EDGE_MIDDLE), int(SCENE_HEIGHT * ROAD_EDGE_TOP_Y)),
+            (0, 0, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.line(
+            frame,
+            (int(SCENE_WIDTH * ROAD_EDGE_MIDDLE), int(SCENE_HEIGHT * ROAD_EDGE_TOP_Y)),
+            (int(SCENE_WIDTH * ROAD_EDGE_MIDDLE), int(SCENE_HEIGHT)),
+            (0, 0, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
         cv2.putText(
             frame,
             "FPS: {0:.2f}".format(frame_rate_calc),
@@ -257,9 +327,10 @@ while True:
             cv2.LINE_AA,
         )
 
-    # All the results have been drawn on the frame, so it's time to display it.
-    if DEBUG_DRAW:
+        # All the results have been drawn on the frame, so it's time to display it.
         cv2.imshow("Object detector", frame)
+    dst.value = frame_min_distance
+    dng.value = frame_max_danger
 
     # Press 'q' to quit
     if cv2.waitKey(1) == ord("q"):
@@ -270,7 +341,6 @@ while True:
     time1 = (t2 - t1) / freq
     frame_rate_calc = 1 / time1
 
-
 # Clean up
 cv2.destroyAllWindows()
-videostream.stop()
+# videostream.stop()
