@@ -72,7 +72,6 @@ if __name__ == "__main__":
     pkg = importlib.util.find_spec("tflite_runtime")
     if pkg:
         from tflite_runtime.interpreter import Interpreter
-
         if use_TPU:
             from tflite_runtime.interpreter import load_delegate
     else:

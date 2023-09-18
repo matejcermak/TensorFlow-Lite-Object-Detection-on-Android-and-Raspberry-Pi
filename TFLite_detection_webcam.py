@@ -23,51 +23,10 @@ import time
 from threading import Thread
 import importlib.util
 from functions import *
-
-
-# Define VideoStream class to handle streaming of video from webcam in separate processing thread
-# Source - Adrian Rosebrock, PyImageSearch: https://www.pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
-class VideoStream:
-    """Camera object that controls video streaming from the Picamera"""
-
-    def __init__(self, resolution=(640, 480), framerate=30):
-        # Initialize the PiCamera and the camera image stream
-        self.stream = cv2.VideoCapture(0)
-        ret = self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        ret = self.stream.set(3, resolution[0])
-        ret = self.stream.set(4, resolution[1])
-
-        # Read first frame from the stream
-        (self.grabbed, self.frame) = self.stream.read()
-
-        # Variable to control when the camera is stopped
-        self.stopped = False
-
-    def start(self):
-        # Start the thread that reads frames from the video stream
-        Thread(target=self.update, args=()).start()
-        return self
-
-    def update(self):
-        # Keep looping indefinitely until the thread is stopped
-        while True:
-            # If the camera is stopped, stop the thread
-            if self.stopped:
-                # Close camera resources
-                self.stream.release()
-                return
-
-            # Otherwise, grab the next frame from the stream
-            (self.grabbed, self.frame) = self.stream.read()
-
-    def read(self):
-        # Return the most recent frame
-        return self.frame
-
-    def stop(self):
-        # Indicate that the camera and thread should be stopped
-        self.stopped = True
-
+from picamera2 import Picamera2, Preview
+from libcamera import controls, Transform
+from pprint import *
+from gatt_server import *
 
 # Define and parse input arguments
 parser = argparse.ArgumentParser()
@@ -81,9 +40,45 @@ args = parser.parse_args()
 MODEL_NAME = args.modeldir
 GRAPH_NAME = "detect.tflite"
 LABELMAP_NAME = "labelmap.txt"
-SCENE_WIDTH = 1280
-SCENE_HEIGHT = 720
+SCENE_WIDTH = 300
+SCENE_HEIGHT = 300
 use_TPU = args.edgetpu
+
+#time.sleep(60)
+
+######## init BLE #############
+app = Application()
+app.add_service(BatteryService(0))
+HR_SERVICE = HeartRateService(1)
+app.add_service(HR_SERVICE)
+app.add_service(DeviceInformationService(2))
+#app.add_service(WahooService(2))
+app.register()
+
+adv = Advertisement(0)
+adv.register()
+
+######### init Picamera ###########
+
+picam2 = Picamera2()
+
+config = picam2.create_video_configuration(
+    main={"size": (SCENE_WIDTH, SCENE_HEIGHT)},
+    transform=Transform(hflip=1, vflip=1),
+    raw=picam2.sensor_modes[1] # 60 fps, wide
+)
+picam2.configure(config)
+
+picam2.set_controls({
+    "AfMode": controls.AfModeEnum.Manual, # do not use AF
+    "LensPosition": 0.0, # focus to infinity
+    "NoiseReductionMode": controls.draft.NoiseReductionModeEnum.Off, # no noise reduction
+    "AeExposureMode": controls.AeExposureModeEnum.Short, # short exposure preffered
+    #"AeConstraintMode": controls.AeConstraintModeEnum.Shadows  # shadows?
+})
+
+picam2.start()
+
 
 # Import TensorFlow libraries
 # If tflite_runtime is installed, import interpreter from tflite_runtime, else import from regular tensorflow
@@ -115,7 +110,7 @@ PATH_TO_CKPT = os.path.join(CWD_PATH, MODEL_NAME, GRAPH_NAME)
 # Path to label map file
 PATH_TO_LABELS = os.path.join(CWD_PATH, MODEL_NAME, LABELMAP_NAME)
 
-DEBUG_DRAW = False
+DEBUG_DRAW = True
 
 # Load the label map
 with open(PATH_TO_LABELS, "r") as f:
@@ -163,10 +158,8 @@ else:  # This is a TF1 model
 frame_rate_calc = 1
 freq = cv2.getTickFrequency()
 
-# TODO: setup picamera before stream starts
-
 # Initialize video stream
-videostream = VideoStream(resolution=(SCENE_WIDTH, SCENE_HEIGHT), framerate=30).start()
+#videostream = VideoStream(resolution=(SCENE_WIDTH, SCENE_HEIGHT), framerate=30).start()
 time.sleep(1)
 
 # for frame1 in camera.capture_continuous(rawCapture, format="bgr",use_video_port=True):
@@ -175,8 +168,9 @@ while True:
     t1 = cv2.getTickCount()
 
     # Grab frame from video stream
-    frame1 = videostream.read()
-    frame = frame1.copy()
+    #frame1 = videostream.read()
+    #frame = frame1.copy()
+    frame = picam2.capture_array()
 
     ############# VARIABLE SETTING #############
     frame_max_danger = 0.0  # reset danger for frame
@@ -185,9 +179,12 @@ while True:
     input_data = preprocess_frame(height, width, frame, floating_model)
     boxes, classes, scores = inference(interpreter, input_data, input_details, output_details)
 
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
     # Loop over all detections and draw detection box if confidence is above minimum threshold
     for i in range(len(scores)):
         if (scores[i] > MIN_CONF_THRESHOLD) and (scores[i] <= 1.0):
+            #print(scores[i])
             ############# Get bounding box coordinates and draw box #############
             ymin, xmin, ymax, xmax = get_box_coords(SCENE_WIDTH, SCENE_HEIGHT, boxes, i)
 
@@ -242,6 +239,8 @@ while True:
                     color,
                 )
 
+    HR_SERVICE.hrmc.set_hr_value(100 + int(frame_max_danger*100))
+
     if frame_max_danger > DANGER_THRESHOLD:
         print(f"DANGER: {frame_max_danger}")
 
@@ -258,13 +257,13 @@ while True:
             cv2.LINE_AA,
         )
 
-        # All the results have been drawn on the frame, so it's time to display it.
-        if DEBUG_DRAW:
-            cv2.imshow("Object detector", frame)
+    # All the results have been drawn on the frame, so it's time to display it.
+    if DEBUG_DRAW:
+        cv2.imshow("Object detector", frame)
 
-        # Press 'q' to quit
-        if cv2.waitKey(1) == ord("q"):
-            break
+    # Press 'q' to quit
+    if cv2.waitKey(1) == ord("q"):
+        break
 
     # Calculate framerate
     t2 = cv2.getTickCount()
